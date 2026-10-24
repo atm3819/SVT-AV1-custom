@@ -581,7 +581,9 @@ static void copy_input_buffer_overlay(SequenceControlSet* sequenceControlSet, Eb
     dst->qp           = src->qp;
     dst->pic_type     = src->pic_type;
 
-    // Copy the metadata array
+    // Copy the metadata array. Most overlay candidates are dropped without being coded, so this
+    // pooled buffer may still hold an earlier picture's metadata, which the copy would append to.
+    svt_metadata_array_free(&dst->metadata);
     if (svt_aom_copy_metadata_buffer(dst, src->metadata) != EB_ErrorNone) {
         dst->metadata = NULL;
     }
@@ -1354,6 +1356,9 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
                 pcs->qp_on_the_fly = false;
             }
             pcs->picture_qp = (uint8_t)pcs->input_ptr->qp;
+            if (!CONFIG_ENABLE_LOSSLESS || SVT_RTC_TUNE(scs)) {
+                pcs->picture_qp = AOMMAX(pcs->picture_qp, 1); // no qindex 0 (lossless), as in copy_api_from_app()
+            }
         } else {
             pcs->qp_on_the_fly = false;
             pcs->picture_qp    = (uint8_t)scs->static_config.qp;
