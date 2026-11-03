@@ -16,7 +16,7 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
                     "Please use the Build folder or create your own.")
 endif()
 
-project(svt-av1 VERSION 4.2.0
+project(svt-av1 VERSION 4.3.0
     LANGUAGES C CXX)
 
 set(VERSION_TAG "")
@@ -81,6 +81,11 @@ endif()
 option(LOG_QUIET "Disable all logging from encoder" OFF)
 if(LOG_QUIET)
     add_definitions(-DCONFIG_LOG_QUIET=1)
+endif()
+
+option(ENABLE_FAST_DECODE_3 "Build the experimental fast-decode 3 level (decode-speed settings for still images)" OFF)
+if(ENABLE_FAST_DECODE_3)
+    add_definitions(-DCONFIG_ENABLE_FAST_DECODE_3=1)
 endif()
 
 option(RTC_BUILD "Optimize build for RTC by disabling unused features and logging" OFF)
