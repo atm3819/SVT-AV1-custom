@@ -1,5 +1,5 @@
 
-name: Sync with Upstream
+name: Sync SVT-AV1 Upstream
 
 on:
   workflow_dispatch:
@@ -13,12 +13,12 @@ concurrency:
 
 jobs:
   sync:
-    name: Sync upstream to separate branch
+    name: Sync upstream changes
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout fork
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -28,32 +28,84 @@ jobs:
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote
-        env:
-          UPSTREAM_REPO: https://github.com/UPSTREAM_OWNER/UPSTREAM_REPO.git
+      - name: Add upstream repository
         run: |
-          git remote add upstream "$UPSTREAM_REPO"
+          git remote add upstream \
+            https://github.com/AOMediaCodec/SVT-AV1.git
 
-      - name: Fetch repositories
+      - name: Fetch latest changes
         run: |
           git fetch origin
           git fetch upstream
 
-      - name: Create sync branch
+      - name: Detect branches
+        id: branches
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          git checkout -B sync-upstream "origin/$DEFAULT_BRANCH"
+          UPSTREAM_BRANCH=$(git ls-remote --symref upstream HEAD \
+            | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
 
-      - name: Merge upstream with automatic conflict resolution
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          if [ -z "$UPSTREAM_BRANCH" ]; then
+            echo "Could not detect upstream default branch"
+            exit 1
+          fi
+
+          echo "default=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "upstream=$UPSTREAM_BRANCH" >> "$GITHUB_OUTPUT"
+
+          echo "Fork branch: $DEFAULT_BRANCH"
+          echo "Upstream branch: $UPSTREAM_BRANCH"
+
+      - name: Create sync branch
         run: |
-          git merge upstream/"$DEFAULT_BRANCH" \
-            --no-edit \
-            -X theirs
+          git checkout -B sync-upstream \
+            "origin/${{ steps.branches.outputs.default }}"
+
+      - name: Merge upstream
+        id: merge
+        env:
+          UPSTREAM_BRANCH: ${{ steps.branches.outputs.upstream }}
+        shell: bash
+        run: |
+          if git merge "upstream/$UPSTREAM_BRANCH" \
+            --no-edit -X theirs; then
+            echo "Merge completed successfully"
+          else
+            echo "Merge conflicts detected."
+            echo "Resolving remaining conflicts using upstream files..."
+
+            if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              echo "Merge failed for a reason other than conflicts."
+              exit 1
+            fi
+
+            while IFS= read -r -d '' file; do
+              if git checkout --theirs -- "$file"; then
+                git add -- "$file"
+              else
+                # Upstream deleted this file
+                git rm -f --ignore-unmatch -- "$file"
+              fi
+            done < <(git diff --name-only --diff-filter=U -z)
+
+            git add -A
+
+            git commit -m "Merge upstream with automatic conflict resolution"
+
+            echo "Remaining conflicts resolved."
+          fi
 
       - name: Push sync branch
         run: |
           git push origin sync-upstream --force-with-lease
 
+      - name: Summary
+        run: |
+          echo "## SVT-AV1 Upstream Sync" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fork: atm3819/svt-av1-custom" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream: AOMediaCodec/SVT-AV1" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch: sync-upstream" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Default branch: untouched" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Conflict preference: upstream" >> "$GITHUB_STEP_SUMMARY"
