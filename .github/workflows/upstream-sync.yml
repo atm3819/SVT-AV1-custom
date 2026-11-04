@@ -25,7 +25,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://gitlab.com/AOMediaCodec/SVT-AV1.git
+          git remote add upstream https://github.com/AOMediaCodec/SVT-AV1.git
           git fetch upstream master
           git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
           git merge --no-edit upstream/master
