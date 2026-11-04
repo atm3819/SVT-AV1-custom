@@ -36,6 +36,16 @@ jobs:
 
           git fetch upstream "$UPSTREAM_DEFAULT_BRANCH"
           git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
-          # Resolve conflicting changes in favor of upstream while keeping non-conflicting local changes.
-          git merge --no-edit -X theirs FETCH_HEAD
+          UPSTREAM_REF=$(git rev-parse FETCH_HEAD)
+
+          if git merge-base --is-ancestor "$UPSTREAM_REF" HEAD; then
+            echo "The upstream default branch is already included."
+          else
+            # Prefer upstream for ordinary conflicts, but preserve this repository's workflow files.
+            git merge --no-ff --no-commit -X theirs "$UPSTREAM_REF"
+            git restore --source=HEAD --staged --worktree -- .github/workflows/
+            git clean -fd -- .github/workflows/
+            git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)"
+          fi
+
           git push --force origin upstream-sync
