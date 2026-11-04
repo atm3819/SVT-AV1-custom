@@ -1,4 +1,3 @@
-
 name: Check SVT-AV1 upstream
 
 on:
@@ -28,7 +27,8 @@ jobs:
           git remote add upstream https://github.com/AOMediaCodec/SVT-AV1.git
           git fetch upstream master
           git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
-          git merge --no-edit upstream/master
+          # Resolve conflicting changes in favor of upstream while keeping non-conflicting local changes.
+          git merge --no-edit -X theirs upstream/master
           git push --force origin upstream-sync
 
       - name: Create update pull request
