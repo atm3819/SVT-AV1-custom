@@ -21,11 +21,20 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/AOMediaCodec/SVT-AV1.git
-          git fetch upstream master
+
+          UPSTREAM_DEFAULT_BRANCH=$(git ls-remote --symref upstream HEAD | awk '$1 == "ref:" { sub("refs/heads/", "", $2); print $2; exit }')
+          if [ -z "$UPSTREAM_DEFAULT_BRANCH" ]; then
+            echo "Could not determine the upstream default branch from its HEAD reference." >&2
+            exit 1
+          fi
+          echo "Syncing from upstream default branch: $UPSTREAM_DEFAULT_BRANCH"
+
+          git fetch upstream "$UPSTREAM_DEFAULT_BRANCH"
           git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
           # Resolve conflicting changes in favor of upstream while keeping non-conflicting local changes.
-          git merge --no-edit -X theirs upstream/master
+          git merge --no-edit -X theirs FETCH_HEAD
           git push --force origin upstream-sync
