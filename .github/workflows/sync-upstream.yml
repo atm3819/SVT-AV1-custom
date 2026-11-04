@@ -18,9 +18,10 @@ jobs:
 
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Configure Git
         run: |
@@ -33,7 +34,7 @@ jobs:
           git remote add upstream \
             https://github.com/AOMediaCodec/SVT-AV1.git
 
-      - name: Fetch latest changes
+      - name: Fetch repositories
         run: |
           git fetch origin
           git fetch upstream
@@ -44,10 +45,13 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           UPSTREAM_BRANCH=$(git ls-remote --symref upstream HEAD \
-            | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')
+            | awk '/^ref:/ {
+                sub("refs/heads/", "", $2)
+                print $2
+              }')
 
           if [ -z "$UPSTREAM_BRANCH" ]; then
-            echo "Could not detect upstream default branch"
+            echo "Unable to detect upstream default branch"
             exit 1
           fi
 
@@ -63,7 +67,6 @@ jobs:
             "origin/${{ steps.branches.outputs.default }}"
 
       - name: Merge upstream
-        id: merge
         env:
           UPSTREAM_BRANCH: ${{ steps.branches.outputs.upstream }}
         shell: bash
@@ -72,40 +75,52 @@ jobs:
             --no-edit -X theirs; then
             echo "Merge completed successfully"
           else
-            echo "Merge conflicts detected."
-            echo "Resolving remaining conflicts using upstream files..."
-
             if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-              echo "Merge failed for a reason other than conflicts."
+              echo "Merge failed for a non-conflict reason"
               exit 1
             fi
 
+            echo "Resolving remaining conflicts..."
+
             while IFS= read -r -d '' file; do
-              if git checkout --theirs -- "$file"; then
+              if [[ "$file" == .github/workflows/* ]]; then
+                echo "Preserving fork workflow: $file"
+                git checkout --ours -- "$file"
+                git add -- "$file"
+              elif git checkout --theirs -- "$file"; then
                 git add -- "$file"
               else
-                # Upstream deleted this file
                 git rm -f --ignore-unmatch -- "$file"
               fi
             done < <(git diff --name-only --diff-filter=U -z)
 
             git add -A
-
             git commit -m "Merge upstream with automatic conflict resolution"
-
-            echo "Remaining conflicts resolved."
           fi
+
+      - name: Remove upstream workflow changes
+        run: |
+          git restore \
+            --source=HEAD \
+            --staged \
+            --worktree \
+            .github/workflows/ 2>/dev/null || true
 
       - name: Push sync branch
         run: |
           git push origin sync-upstream --force-with-lease
 
-      - name: Summary
+      - name: Generate summary
         run: |
-          echo "## SVT-AV1 Upstream Sync" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Fork: atm3819/svt-av1-custom" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Upstream: AOMediaCodec/SVT-AV1" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Branch: sync-upstream" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Default branch: untouched" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Conflict preference: upstream" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## SVT-AV1 Upstream Sync"
+            echo ""
+            echo "- Fork: atm3819/svt-av1-custom"
+            echo "- Upstream: AOMediaCodec/SVT-AV1"
+            echo "- Sync branch: sync-upstream"
+            echo "- Default branch: untouched"
+            echo "- Workflow files: preserved from fork"
+            echo "- Conflict preference: upstream"
+            echo ""
+            echo "Sync completed successfully."
+          } >> "$GITHUB_STEP_SUMMARY"
