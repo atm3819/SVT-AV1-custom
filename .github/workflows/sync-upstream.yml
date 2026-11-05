@@ -1,5 +1,5 @@
 
-name: Sync SVT-AV1 Upstream (ChatGPT)
+name: Sync SVT-AV1 Upstream (chatGPT)
 
 on:
   workflow_dispatch:
@@ -103,6 +103,26 @@ jobs:
       - name: Create merge commit
         run: |
           git commit -m "Merge upstream SVT-AV1 changes"
+
+      - name: Show changed files
+        env:
+          DEFAULT_BRANCH: ${{ steps.branches.outputs.default }}
+        run: |
+          echo "## Changed Files" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          git diff --stat \
+            "origin/$DEFAULT_BRANCH"...sync-upstream \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Detailed Diff" >> "$GITHUB_STEP_SUMMARY"
+
+          echo '```diff' >> "$GITHUB_STEP_SUMMARY"
+          git diff --numstat \
+            "origin/$DEFAULT_BRANCH"...sync-upstream \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push sync branch
         run: |
