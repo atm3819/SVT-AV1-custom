@@ -242,11 +242,37 @@ void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep
 }
 
 #if CONFIG_ENABLE_TPL
+// Forward transform of (src - pred); the 8-bit 16x16 N4 DCT forms the residual inside the transform.
+static AOM_INLINE void tpl_residual_fwd_txfm(const TplControls* tpl_ctrls, uint32_t size, TxSize tx_size,
+                                             int16_t* src_diff, const uint8_t* src, uint32_t src_stride,
+                                             const uint8_t* pred, uint32_t pred_stride, int32_t* coeff) {
+    if (SVT_X86_ONLY_KERNEL_PATHS && tx_size == TX_16X16 && tpl_ctrls->pf_shape == N4_SHAPE) {
+        svt_av1_fwd_txfm2d_16x16_N4_sub_dct(src, src_stride, pred, pred_stride, coeff);
+        return;
+    }
+    svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
+                           size,
+                           src_diff,
+                           size << tpl_ctrls->subsample_tx,
+                           src,
+                           src_stride << tpl_ctrls->subsample_tx,
+                           pred,
+                           pred_stride << tpl_ctrls->subsample_tx);
+    svt_av1_wht_fwd_txfm(src_diff, size << tpl_ctrls->subsample_tx, coeff, tx_size, tpl_ctrls->pf_shape, 8, 0);
+}
+
 static AOM_INLINE void get_quantize_error(MacroblockPlane* p, const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff,
-                                          TxSize tx_size, uint16_t* eob, int64_t* recon_error, int64_t* sse) {
+                                          TxSize tx_size, TxCoeffShape pf_shape, uint16_t* eob, int64_t* recon_error,
+                                          int64_t* sse) {
     const ScanOrder* const scan_order = get_scan_order(tx_size, DCT_DCT);
     int                    pix_num    = 1 << eb_num_pels_log2_lookup[txsize_to_bsize[tx_size]];
     const int              shift      = tx_size == TX_32X32 ? 0 : 2;
+
+    // N2/N4 transforms leave only the top (height >> pf_shape) rows non-zero. Zero coefficients quantize to zero and
+    // add nothing to the error, so only those rows are processed; the caller zeroes the tail once.
+    if (pf_shape && tx_size >= TX_8X8 && tx_size <= TX_32X32) {
+        pix_num >>= pf_shape;
+    }
 
     svt_av1_quantize_fp(coeff,
                         pix_num,
@@ -554,6 +580,10 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
     DECLARE_ALIGNED(32, TranLow, best_coeff[MAX_TPL_SAMPLES_PER_BLOCK]);
     DECLARE_ALIGNED(16, uint8_t, compensated_blk[(const uint32_t)MAX_TPL_SAMPLES_PER_BLOCK]);
     uint8_t* predictor = predictor8;
+    // get_quantize_error() writes only the leading N2/N4 coefficients
+    const int tx_pix_num = 1 << eb_num_pels_log2_lookup[txsize_to_bsize[tx_size]];
+    memset(qcoeff, 0, tx_pix_num * sizeof(*qcoeff));
+    memset(dqcoeff, 0, tx_pix_num * sizeof(*dqcoeff));
 
     MacroblockPlane mb_plane;
     mb_plane.quant_qtx       = scs->enc_ctx->quants_8bit.y_quant[qIndex];
@@ -948,21 +978,19 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                                                          NULL); // wm_params
                     }
 
-                    svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
-                                           size,
-                                           src_diff,
-                                           size << tpl_ctrls->subsample_tx,
-                                           src_mb,
-                                           input_pic->y_stride << tpl_ctrls->subsample_tx,
-                                           subpel_mv ? compensated_blk : ref_pic_ptr->y_buffer + ref_origin_index,
-                                           (subpel_mv ? size : ref_pic_ptr->y_stride) << tpl_ctrls->subsample_tx);
-                    TxCoeffShape pf_shape = pcs->tpl_ctrls.pf_shape;
-
-                    svt_av1_wht_fwd_txfm(
-                        src_diff, size << tpl_ctrls->subsample_tx, best_coeff, tx_size, pf_shape, 8, 0);
+                    tpl_residual_fwd_txfm(tpl_ctrls,
+                                          size,
+                                          tx_size,
+                                          src_diff,
+                                          src_mb,
+                                          input_pic->y_stride,
+                                          subpel_mv ? compensated_blk : ref_pic_ptr->y_buffer + ref_origin_index,
+                                          subpel_mv ? size : ref_pic_ptr->y_stride,
+                                          best_coeff);
                 }
 
-                get_quantize_error(&mb_plane, best_coeff, qcoeff, dqcoeff, tx_size, &eob, &recon_error, &sse);
+                get_quantize_error(
+                    &mb_plane, best_coeff, qcoeff, dqcoeff, tx_size, pcs->tpl_ctrls.pf_shape, &eob, &recon_error, &sse);
 
 #if CONFIG_ENABLE_TPL_HQ
                 int64_t rate_cost = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
@@ -995,6 +1023,9 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
             best_intra_mode      = tpl_src_stats_buffer->best_intra_mode;
         }
 
+        // Full-pel inter predicts straight from the reference; recon is written to dst_buffer
+        uint8_t* pred        = dst_buffer;
+        int      pred_stride = dst_buffer_stride;
         //Recon path
         if (best_mode == NEWMV) {
             // inter recon with rec_picture as reference pic
@@ -1055,12 +1086,8 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                                                  false, // is_wm
                                                  NULL); // wm_params
             } else {
-                svt_av1_copy_wxh_8bit(ref_pic_ptr->y_buffer + ref_origin_index,
-                                      ref_pic_ptr->y_stride,
-                                      dst_buffer,
-                                      dst_buffer_stride,
-                                      size,
-                                      size);
+                pred        = ref_pic_ptr->y_buffer + ref_origin_index;
+                pred_stride = ref_pic_ptr->y_stride;
             }
         } else {
             // intra recon
@@ -1156,20 +1183,13 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
             }
         }
 
-        svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
-                               size,
-                               src_diff,
-                               size << tpl_ctrls->subsample_tx,
-                               src_mb,
-                               input_pic->y_stride << tpl_ctrls->subsample_tx,
-                               dst_buffer,
-                               dst_buffer_stride << tpl_ctrls->subsample_tx);
+        tpl_residual_fwd_txfm(
+            tpl_ctrls, size, tx_size, src_diff, src_mb, input_pic->y_stride, pred, pred_stride, coeff);
         TxCoeffShape pf_shape = pcs->tpl_ctrls.pf_shape;
-        svt_av1_wht_fwd_txfm(src_diff, size << tpl_ctrls->subsample_tx, coeff, tx_size, pf_shape, 8, 0);
 
         uint16_t eob = 0;
 
-        get_quantize_error(&mb_plane, coeff, qcoeff, dqcoeff, tx_size, &eob, &recon_error, &sse);
+        get_quantize_error(&mb_plane, coeff, qcoeff, dqcoeff, tx_size, pf_shape, &eob, &recon_error, &sse);
 #if CONFIG_ENABLE_TPL_HQ
         int64_t rate_cost = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
 #else
@@ -1178,10 +1198,12 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
 #endif
 
         if (!disable_intra_pred || (pcs->tpl_data.is_ref)) {
-            if (eob) {
+            if (!eob && pred != dst_buffer) {
+                svt_av1_copy_wxh_8bit(pred, pred_stride, dst_buffer, dst_buffer_stride, size, size);
+            } else if (eob) {
                 svt_aom_inv_transform_recon8bit((int32_t*)dqcoeff,
-                                                dst_buffer,
-                                                dst_buffer_stride << tpl_ctrls->subsample_tx,
+                                                pred,
+                                                pred_stride << tpl_ctrls->subsample_tx,
                                                 dst_buffer,
                                                 dst_buffer_stride << tpl_ctrls->subsample_tx,
                                                 tx_size,
@@ -1585,8 +1607,9 @@ static AOM_INLINE void tpl_model_update_b(PictureParentControlSet* ref_pcs_ptr, 
 * Genrate TPL MC Flow Synthesizer
 ************************************************/
 
-static AOM_INLINE void tpl_model_update(PictureParentControlSet* pcs_array[MAX_TPL_LA_SW], int32_t frame_idx,
-                                        int mi_row, int mi_col, const BlockSize bsize, uint8_t frames_in_sw) {
+static AOM_INLINE void tpl_model_update(PictureParentControlSet* pcs_array[MAX_TPL_LA_SW], const uint64_t* pic_num,
+                                        int32_t frame_idx, int mi_row, int mi_col, const BlockSize bsize,
+                                        uint8_t frames_in_sw) {
     const int                mi_height = mi_size_high[bsize];
     const int                mi_width  = mi_size_wide[bsize];
     PictureParentControlSet* pcs       = pcs_array[frame_idx];
@@ -1604,7 +1627,7 @@ static AOM_INLINE void tpl_model_update(PictureParentControlSet* pcs_array[MAX_T
             TplStats* tpl_stats_ptr = pcs->pa_me_data->tpl_stats[(((mi_row + idy) >> shift) * (mi_cols_sr >> shift)) +
                                                                  ((mi_col + idx) >> shift)];
 
-            while (i < frames_in_sw && pcs_array[i]->picture_number != tpl_stats_ptr->ref_frame_poc) {
+            while (i < frames_in_sw && pic_num[i] != tpl_stats_ptr->ref_frame_poc) {
                 i++;
             }
             if (i < frames_in_sw) {
@@ -1625,10 +1648,15 @@ void tpl_mc_flow_synthesizer(PictureParentControlSet* pcs_array[MAX_TPL_LA_SW], 
     const BlockSize bsize     = pcs_array[frame_idx]->tpl_ctrls.synth_blk_size == 32 ? BLOCK_32X32 : BLOCK_16X16;
     const int       mi_height = mi_size_high[bsize];
     const int       mi_width  = mi_size_wide[bsize];
+    // the reference search scans picture numbers per block; keep them local instead of chasing every pcs
+    uint64_t pic_num[MAX_TPL_LA_SW];
+    for (int i = 0; i < frames_in_sw; i++) {
+        pic_num[i] = pcs_array[i]->picture_number;
+    }
 
     for (int mi_row = 0; mi_row < cm->mi_rows; mi_row += mi_height) {
         for (int mi_col = 0; mi_col < cm->mi_cols; mi_col += mi_width) {
-            tpl_model_update(pcs_array, frame_idx, mi_row, mi_col, bsize, frames_in_sw);
+            tpl_model_update(pcs_array, pic_num, frame_idx, mi_row, mi_col, bsize, frames_in_sw);
         }
     }
     return;

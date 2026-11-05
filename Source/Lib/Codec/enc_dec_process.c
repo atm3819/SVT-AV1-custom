@@ -2936,11 +2936,7 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                         }
                     }
 
-                    if (ed_ctx->md_ctx->lpd1_globalmv_bypass_th) {
-                        memset(ed_ctx->md_ctx->pd0_mds0_best_cost,
-                               0xFF,
-                               (size_t)scs->max_block_cnt * sizeof(ed_ctx->md_ctx->pd0_mds0_best_cost[0]));
-                    }
+                    ed_ctx->md_ctx->sb_epoch++;
                     // Initialize is_subres_safe
                     ed_ctx->md_ctx->is_subres_safe = (uint8_t)~0;
                     // Signal initialized here; if needed, will be set in md_encode_block before MDS3
@@ -3136,6 +3132,8 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                         if (sb_index == 0) {
                             svt_av1_loop_filter_init(pcs);
                             svt_av1_pick_filter_level((EbPictureBufferDesc*)pcs->ppcs->enhanced_pic, pcs);
+                            EB_DELETE(pcs->temp_lf_recon_pic);
+                            EB_DELETE(pcs->temp_lf_recon_pic_16bit);
                             svt_av1_loop_filter_frame_init(&pcs->ppcs->frm_hdr, &pcs->ppcs->lf_info, 0, 3);
                         }
 

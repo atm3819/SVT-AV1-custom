@@ -2538,6 +2538,12 @@ uint64_t svt_handle_transform64x64_c(int32_t* output) {
     return three_quad_energy;
 }
 
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_c(int16_t* input, int32_t* output, uint32_t input_stride,
+                                           TxType transform_type, uint8_t bit_depth) {
+    svt_av1_fwd_txfm2d_64x64(input, output, input_stride, transform_type, bit_depth);
+    return svt_handle_transform64x64(output);
+}
+
 void svt_av1_transform_two_d_64x64_c(int16_t* input, int32_t* output, uint32_t input_stride, TxType transform_type,
                                      uint8_t bit_depth) {
     int32_t       intermediate_transform_buffer[64 * 64];
@@ -2955,6 +2961,43 @@ static EbErrorType av1_estimate_transform_N2(int16_t* residual_buffer, uint32_t 
 }
 #endif // CONFIG_ENABLE_TX_PF_N2 && CONFIG_ENABLE_TX_PF_ALL
 
+#if CONFIG_COMPACT_KERNELS
+static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint32_t residual_stride,
+                                                  int32_t* coeff_buffer, uint32_t coeff_stride, TxSize transform_size,
+                                                  uint64_t* three_quad_energy, uint32_t bit_depth,
+                                                  TxType transform_type, PlaneType component_type);
+
+// The N4 shape is the full transform's top-left quarter with all other coefficients zero. Coefficients of 64-length
+// transforms are packed with a stride of 32.
+static void zero_outside_top_left_quarter(int32_t* coeff, TxSize tx_size) {
+    const int keep_w = tx_size_wide[tx_size] / 4, keep_h = tx_size_high[tx_size] / 4;
+    const int w = AOMMIN(tx_size_wide[tx_size], 32), h = AOMMIN(tx_size_high[tx_size], 32);
+    for (int r = 0; r < keep_h; r++) {
+        memset(coeff + r * w + keep_w, 0, (w - keep_w) * sizeof(*coeff));
+    }
+    memset(coeff + keep_h * w, 0, (h - keep_h) * w * sizeof(*coeff));
+}
+
+static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t residual_stride, int32_t* coeff_buffer,
+                                             uint32_t coeff_stride, TxSize transform_size, uint64_t* three_quad_energy,
+                                             uint32_t bit_depth, TxType transform_type, PlaneType component_type) {
+    const EbErrorType return_error = av1_estimate_transform_default(residual_buffer,
+                                                                    residual_stride,
+                                                                    coeff_buffer,
+                                                                    coeff_stride,
+                                                                    transform_size,
+                                                                    three_quad_energy,
+                                                                    bit_depth,
+                                                                    transform_type,
+                                                                    component_type);
+    zero_outside_top_left_quarter(coeff_buffer, transform_size);
+    // The N4 shape does not measure the energy outside the coded 32x32 area of 64-length transforms.
+    if (tx_size_wide[transform_size] == 64 || tx_size_high[transform_size] == 64) {
+        *three_quad_energy = 0;
+    }
+    return return_error;
+}
+#else
 static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t residual_stride, int32_t* coeff_buffer,
                                              uint32_t coeff_stride, TxSize transform_size, uint64_t* three_quad_energy,
                                              uint32_t bit_depth, TxType transform_type, PlaneType component_type)
@@ -3145,6 +3188,7 @@ static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t 
 
     return return_error;
 }
+#endif // CONFIG_COMPACT_KERNELS
 
 #if CONFIG_ENABLE_TX_PF_ALL
 static EbErrorType av1_estimate_transform_ONLY_DC(int16_t* residual_buffer, uint32_t residual_stride,
@@ -3319,11 +3363,8 @@ static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint
         break;
 
     case TX_64X64:
-
-        svt_av1_fwd_txfm2d_64x64(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
-
-        *three_quad_energy = svt_handle_transform64x64(coeff_buffer);
-
+        *three_quad_energy = svt_av1_fwd_txfm2d_64x64_energy(
+            residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         break;
 
     case TX_32X32:
@@ -4049,6 +4090,14 @@ void svt_av1_highbd_fwd_txfm(int16_t* src_diff, TranLow* coeff, int diff_stride,
         assert(0);
         break;
     }
+}
+
+// Callers read only the first 4 coefficient rows (the SIMD versions write only those).
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c(const uint8_t* src, uint32_t src_stride, const uint8_t* pred,
+                                           uint32_t pred_stride, int32_t* coeff) {
+    DECLARE_ALIGNED(32, int16_t, diff[16 * 16]);
+    svt_aom_subtract_block_c(16, 16, diff, 16, src, src_stride, pred, pred_stride);
+    svt_aom_transform_two_d_16x16_N4_c(diff, coeff, 16, DCT_DCT, EB_EIGHT_BIT);
 }
 
 void svt_av1_wht_fwd_txfm(int16_t* src_diff, int bw, int32_t* coeff, TxSize tx_size, TxCoeffShape pf_shape,

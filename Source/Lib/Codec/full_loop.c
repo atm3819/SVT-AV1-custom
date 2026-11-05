@@ -651,6 +651,38 @@ static INLINE int get_coeff_cost_general(int is_last, int ci, TranLow abs_qc, in
     return cost;
 }
 
+void svt_aom_get_block_txb_ctx(PictureControlSet* pcs, ModeDecisionContext* ctx, int32_t plane, NeighborArrayUnit* na,
+                               uint32_t x, uint32_t y, BlockSize plane_bsize, TxSize tx_size, int16_t* txb_skip_ctx,
+                               int16_t* dc_sign_ctx) {
+    TxbCtxCache* c = &ctx->txb_ctx_cache[plane];
+    if (c->gen != ctx->txb_ctx_gen || c->na != na || c->x != x || c->y != y || c->tx_size != tx_size ||
+        c->bsize != plane_bsize) {
+        svt_aom_get_txb_ctx(pcs,
+                            plane ? COMPONENT_CHROMA : COMPONENT_LUMA,
+                            na,
+                            x,
+                            y,
+                            plane_bsize,
+                            tx_size,
+                            &c->skip_ctx,
+                            &c->dc_sign_ctx);
+        c->gen     = ctx->txb_ctx_gen;
+        c->na      = na;
+        c->x       = x;
+        c->y       = y;
+        c->tx_size = tx_size;
+        c->bsize   = plane_bsize;
+    }
+#ifndef NDEBUG
+    int16_t skip_ctx, dc_ctx;
+    svt_aom_get_txb_ctx(
+        pcs, plane ? COMPONENT_CHROMA : COMPONENT_LUMA, na, x, y, plane_bsize, tx_size, &skip_ctx, &dc_ctx);
+    assert(skip_ctx == c->skip_ctx && dc_ctx == c->dc_sign_ctx);
+#endif
+    *txb_skip_ctx = c->skip_ctx;
+    *dc_sign_ctx  = c->dc_sign_ctx;
+}
+
 static INLINE int64_t get_coeff_dist(TranLow tcoeff, TranLow dqcoeff, int shift) {
     return SQR(((int64_t)tcoeff - dqcoeff) * (int64_t)(1lu << shift));
 }
@@ -750,16 +782,67 @@ static INLINE int get_dqv(const int16_t* dequant, int coeff_idx, const QmVal* iq
     return dqv;
 }
 
+// nz_ctx holds the TX_CLASS_2D contexts of the positions still to be visited; after levels[ci] is set to level, refresh
+// the positions whose context reads it. level is passed in rather than reloaded: a wider load spanning the byte just
+// stored stalls on store forwarding.
+static AOM_FORCE_INLINE void refresh_nz_ctx_2d(int8_t* nz_ctx, const uint8_t* levels, int ci, int level, int bwl,
+                                               TxSize tx_size) {
+    const int            w   = 1 << bwl;
+    const int            s   = w + TX_PAD_HOR;
+    const int            col = ci & (w - 1);
+    const uint8_t* const c   = levels + get_padded_idx(ci, bwl);
+    const int            m0  = AOMMIN(level, 3);
+#define L3(o) AOMMIN((int)c[o], 3)
+    if (col >= 1) {
+        const int mag  = m0 + L3(s - 1) + L3(s) + L3(1) + L3(2 * s - 1);
+        nz_ctx[ci - 1] = get_nz_map_ctx_from_stats(mag, ci - 1, bwl, tx_size, TX_CLASS_2D);
+        if (col >= 2) {
+            const int mag2 = L3(-1) + L3(s - 2) + L3(s - 1) + m0 + L3(2 * s - 2);
+            nz_ctx[ci - 2] = get_nz_map_ctx_from_stats(mag2, ci - 2, bwl, tx_size, TX_CLASS_2D);
+        }
+        if (ci >= w) {
+            const int mag3     = L3(-s) + L3(-1) + m0 + L3(1 - s) + L3(s - 1);
+            nz_ctx[ci - w - 1] = get_nz_map_ctx_from_stats(mag3, ci - w - 1, bwl, tx_size, TX_CLASS_2D);
+        }
+    }
+    if (ci >= w) {
+        const int mag  = L3(1 - s) + m0 + L3(1) + L3(2 - s) + L3(s);
+        nz_ctx[ci - w] = get_nz_map_ctx_from_stats(mag, ci - w, bwl, tx_size, TX_CLASS_2D);
+        if (ci >= 2 * w) {
+            const int mag2     = L3(1 - 2 * s) + L3(-s) + L3(1 - s) + L3(2 - 2 * s) + m0;
+            nz_ctx[ci - 2 * w] = get_nz_map_ctx_from_stats(mag2, ci - 2 * w, bwl, tx_size, TX_CLASS_2D);
+        }
+    }
+#undef L3
+}
+
+// Accumulates the zero-coefficient rate from si down to the first non-zero coefficient (or si_end - 1); returns
+// its scan index. The tight loop keeps the counters in registers.
+static AOM_FORCE_INLINE int skip_zero_coeffs_2d(int si, int si_end, const int16_t* scan, const TranLow* qcoeff,
+                                                const int8_t* nz_ctx, const LvMapCoeffCost* txb_costs, int* accu_rate) {
+    int rate = *accu_rate;
+    for (; si >= si_end; --si) {
+        const int ci = scan[si];
+        if (qcoeff[ci]) {
+            break;
+        }
+        rate += txb_costs->base_cost[nz_ctx[ci]][0];
+    }
+    *accu_rate = rate;
+    return si;
+}
+
 static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist, uint16_t* eob, int* nz_num,
                                               int* nz_ci, int si, TxSize tx_size, TxClass tx_class, int bwl, int height,
                                               int dc_sign_ctx, int64_t rdmult, int shift, const int16_t* dequant,
                                               const int16_t* scan, const LvMapEobCost* txb_eob_costs,
                                               const LvMapCoeffCost* txb_costs, const TranLow* tcoeff, TranLow* qcoeff,
-                                              TranLow* dqcoeff, uint8_t* levels, int sharpness, const QmVal* iqm_ptr) {
+                                              TranLow* dqcoeff, uint8_t* levels, int sharpness, const QmVal* iqm_ptr,
+                                              int8_t* nz_ctx) {
     assert(si != *eob - 1);
     const int     ci        = scan[si];
     const TranLow qc        = qcoeff[ci];
-    const int     coeff_ctx = get_lower_levels_ctx(levels, ci, bwl, tx_size, tx_class);
+    const int     coeff_ctx = nz_ctx ? nz_ctx[ci] : get_lower_levels_ctx(levels, ci, bwl, tx_size, tx_class);
     if (qc == 0) {
         *accu_rate += txb_costs->base_cost[coeff_ctx][0];
     } else {
@@ -828,6 +911,9 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
                 levels[get_padded_idx(last_ci, bwl)] = 0;
                 qcoeff[last_ci]                      = 0;
                 dqcoeff[last_ci]                     = 0;
+                if (nz_ctx) {
+                    refresh_nz_ctx_2d(nz_ctx, levels, last_ci, 0, bwl, tx_size);
+                }
             }
             *eob        = new_eob;
             *nz_num     = 0;
@@ -843,6 +929,9 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
             qcoeff[ci]                      = qc_low;
             dqcoeff[ci]                     = dqc_low;
             levels[get_padded_idx(ci, bwl)] = AOMMIN(abs_qc_low, INT8_MAX);
+            if (nz_ctx) {
+                refresh_nz_ctx_2d(nz_ctx, levels, ci, AOMMIN(abs_qc_low, INT8_MAX), bwl, tx_size);
+            }
         }
         if (qcoeff[ci]) {
             nz_ci[*nz_num] = ci;
@@ -855,7 +944,7 @@ static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int 
                                         TxClass tx_class, int bwl, int height, int64_t rdmult, int shift,
                                         int dc_sign_ctx, const int16_t* dequant, const int16_t* scan,
                                         const LvMapCoeffCost* txb_costs, const TranLow* tcoeff, TranLow* qcoeff,
-                                        TranLow* dqcoeff, uint8_t* levels, const QmVal* iqm_ptr) {
+                                        TranLow* dqcoeff, uint8_t* levels, const QmVal* iqm_ptr, int8_t* nz_ctx) {
     const int     ci        = scan[si];
     const TranLow qc        = qcoeff[ci];
     const int     is_last   = si == (eob - 1);
@@ -894,6 +983,9 @@ static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int 
             qcoeff[ci]                      = qc_low;
             dqcoeff[ci]                     = dqc_low;
             levels[get_padded_idx(ci, bwl)] = AOMMIN(abs_qc_low, INT8_MAX);
+            if (nz_ctx) {
+                refresh_nz_ctx_2d(nz_ctx, levels, ci, AOMMIN(abs_qc_low, INT8_MAX), bwl, tx_size);
+            }
             *accu_rate += rate_low;
             *accu_dist += dist_low;
         } else {
@@ -907,7 +999,7 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
                                                  int bwl, int64_t rdmult, int shift, const int16_t* dequant,
                                                  const int16_t* scan, const LvMapCoeffCost* txb_costs,
                                                  const TranLow* tcoeff, TranLow* qcoeff, TranLow* dqcoeff,
-                                                 uint8_t* levels, const QmVal* iqm_ptr) {
+                                                 uint8_t* levels, const QmVal* iqm_ptr, int8_t* nz_ctx) {
     (void)eob;
     // this simple version assumes the coeff's scan_idx is not DC (scan_idx != 0)
     // and not the last (scan_idx != eob - 1)
@@ -915,7 +1007,28 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
     assert(si > 0);
     const int     ci        = scan[si];
     const TranLow qc        = qcoeff[ci];
-    const int     coeff_ctx = get_lower_levels_ctx(levels, ci, bwl, tx_size, tx_class);
+    const int     coeff_ctx = nz_ctx ? nz_ctx[ci] : get_lower_levels_ctx(levels, ci, bwl, tx_size, tx_class);
+    if (nz_ctx && abs(qc) <= 1) {
+        // Same decisions as below for levels 0 and 1, selected without data-dependent branches: zero and one
+        // coefficients interleave unpredictably. For a zero coefficient dqcoeff is 0 and lower is never set.
+        const int32_t* const base_cost = txb_costs->base_cost[coeff_ctx];
+        const TranLow        abs_qc    = abs(qc);
+        const TranLow        abs_tqc   = abs(tcoeff[ci]);
+        const TranLow        abs_dqc   = abs(dqcoeff[ci]);
+        const int            rate      = abs_qc ? base_cost[1] + av1_cost_literal(1) : base_cost[0];
+        const int            rate_low  = rate - base_cost[5];
+        const int64_t        rd        = RDCOST(rdmult, rate, get_coeff_dist_diff0(abs_tqc, abs_dqc, shift));
+        const int64_t        rd_low    = RDCOST(rdmult, rate_low, 0);
+        const int            lower     = abs_qc & (abs_dqc >= abs_tqc) & (rd_low < rd);
+        *accu_rate += lower ? rate_low : rate;
+        if (lower) {
+            qcoeff[ci]                      = 0;
+            dqcoeff[ci]                     = 0;
+            levels[get_padded_idx(ci, bwl)] = 0;
+            refresh_nz_ctx_2d(nz_ctx, levels, ci, 0, bwl, tx_size);
+        }
+        return;
+    }
     if (qc == 0) {
         *accu_rate += txb_costs->base_cost[coeff_ctx][0];
     } else {
@@ -940,6 +1053,9 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
                 qcoeff[ci]                      = 0;
                 dqcoeff[ci]                     = 0;
                 levels[get_padded_idx(ci, bwl)] = 0;
+                if (nz_ctx) {
+                    refresh_nz_ctx_2d(nz_ctx, levels, ci, 0, bwl, tx_size);
+                }
                 *accu_rate += rate_low;
             } else {
                 *accu_rate += rate;
@@ -967,6 +1083,9 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
             qcoeff[ci]                      = (-sign ^ abs_qc_low) + sign;
             dqcoeff[ci]                     = (-sign ^ abs_dqc_low) + sign;
             levels[get_padded_idx(ci, bwl)] = AOMMIN(abs_qc_low, INT8_MAX);
+            if (nz_ctx) {
+                refresh_nz_ctx_2d(nz_ctx, levels, ci, AOMMIN(abs_qc_low, INT8_MAX), bwl, tx_size);
+            }
             *accu_rate += rate_low;
         } else {
             *accu_rate += rate;
@@ -1086,7 +1205,16 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
     uint8_t* const levels = set_levels(ctx->md_levels_buf, width, height);
 
     if (*eob > 1) {
-        svt_av1_txb_init_levels(qcoeff_ptr, width, height, levels);
+        svt_av1_txb_init_levels(qcoeff_ptr, width, get_levels_rows(scan, *eob, bwl, height, tx_class), levels);
+    }
+    DECLARE_ALIGNED(32, int8_t, nz_ctx_buf[32 * 32]);
+    int8_t* nz_ctx = NULL;
+    if (SVT_X86_ONLY_KERNEL_PATHS && tx_class == TX_CLASS_2D && *eob > 8) {
+        // the visited positions lie on the anti-diagonals up to that of the last one
+        const int last = scan[*eob - 1];
+        const int rows = AOMMIN(height, ((last >> bwl) + (last & (width - 1)) + 2) & ~1);
+        svt_av1_get_nz_map_contexts_2d_rows(levels, tx_size, rows, nz_ctx_buf);
+        nz_ctx = nz_ctx_buf;
     }
     int accu_rate = eob_cost;
 
@@ -1118,7 +1246,8 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                              qcoeff_ptr,
                              dqcoeff_ptr,
                              levels,
-                             qparam->iqmatrix);
+                             qparam->iqmatrix,
+                             nz_ctx);
         --si;
     } else {
         assert(abs_qc == 1);
@@ -1130,39 +1259,54 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
         accu_dist += get_coeff_dist_diff0(tqc, dqc, shift);
         --si;
     }
-#define UPDATE_COEFF_EOB_CASE(tx_class_literal)         \
-    case tx_class_literal:                              \
-        for (; si >= 0 && nz_num <= max_nz_num; --si) { \
-            update_coeff_eob(&accu_rate,                \
-                             &accu_dist,                \
-                             eob,                       \
-                             &nz_num,                   \
-                             nz_ci,                     \
-                             si,                        \
-                             tx_size,                   \
-                             tx_class_literal,          \
-                             bwl,                       \
-                             height,                    \
-                             dc_sign_context,           \
-                             rdmult,                    \
-                             shift,                     \
-                             p->dequant_qtx,            \
-                             scan,                      \
-                             txb_eob_costs,             \
-                             txb_costs,                 \
-                             coeff_ptr,                 \
-                             qcoeff_ptr,                \
-                             dqcoeff_ptr,               \
-                             levels,                    \
-                             sharpness,                 \
-                             qparam->iqmatrix);         \
-        }                                               \
-        break;
+#define UPDATE_COEFF_EOB_LOOP(tx_class_literal, nz_ctx_arg)                                       \
+    for (; si >= 0 && nz_num <= max_nz_num; --si) {                                               \
+        if (nz_ctx_arg) {                                                                         \
+            si = skip_zero_coeffs_2d(si, 0, scan, qcoeff_ptr, nz_ctx_arg, txb_costs, &accu_rate); \
+            if (si < 0) {                                                                         \
+                break;                                                                            \
+            }                                                                                     \
+        }                                                                                         \
+        update_coeff_eob(&accu_rate,                                                              \
+                         &accu_dist,                                                              \
+                         eob,                                                                     \
+                         &nz_num,                                                                 \
+                         nz_ci,                                                                   \
+                         si,                                                                      \
+                         tx_size,                                                                 \
+                         tx_class_literal,                                                        \
+                         bwl,                                                                     \
+                         height,                                                                  \
+                         dc_sign_context,                                                         \
+                         rdmult,                                                                  \
+                         shift,                                                                   \
+                         p->dequant_qtx,                                                          \
+                         scan,                                                                    \
+                         txb_eob_costs,                                                           \
+                         txb_costs,                                                               \
+                         coeff_ptr,                                                               \
+                         qcoeff_ptr,                                                              \
+                         dqcoeff_ptr,                                                             \
+                         levels,                                                                  \
+                         sharpness,                                                               \
+                         qparam->iqmatrix,                                                        \
+                         nz_ctx_arg);                                                             \
+    }
     switch (tx_class) {
-        UPDATE_COEFF_EOB_CASE(TX_CLASS_2D);
-        UPDATE_COEFF_EOB_CASE(TX_CLASS_HORIZ);
-        UPDATE_COEFF_EOB_CASE(TX_CLASS_VERT);
-#undef UPDATE_COEFF_EOB_CASE
+    case TX_CLASS_2D:
+        if (nz_ctx) {
+            UPDATE_COEFF_EOB_LOOP(TX_CLASS_2D, nz_ctx);
+        } else {
+            UPDATE_COEFF_EOB_LOOP(TX_CLASS_2D, NULL);
+        }
+        break;
+    case TX_CLASS_HORIZ:
+        UPDATE_COEFF_EOB_LOOP(TX_CLASS_HORIZ, NULL);
+        break;
+    case TX_CLASS_VERT:
+        UPDATE_COEFF_EOB_LOOP(TX_CLASS_VERT, NULL);
+        break;
+#undef UPDATE_COEFF_EOB_LOOP
     default:
         assert(false);
     }
@@ -1191,32 +1335,41 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                              (*eob * ctx->rdoq_ctrls.cut_off_num) / ctx->rdoq_ctrls.cut_off_denum);
             si_end                  = AOMMAX(1, *eob - cut_off_coeff);
         }
-#define UPDATE_COEFF_SIMPLE_CASE(tx_class_literal) \
-    case tx_class_literal:                         \
-        for (; si >= si_end; --si) {               \
-            update_coeff_simple(&accu_rate,        \
-                                si,                \
-                                *eob,              \
-                                tx_size,           \
-                                tx_class_literal,  \
-                                bwl,               \
-                                rdmult,            \
-                                shift,             \
-                                p->dequant_qtx,    \
-                                scan,              \
-                                txb_costs,         \
-                                coeff_ptr,         \
-                                qcoeff_ptr,        \
-                                dqcoeff_ptr,       \
-                                levels,            \
-                                qparam->iqmatrix); \
-        }                                          \
-        break;
+#define UPDATE_COEFF_SIMPLE_LOOP(tx_class_literal, nz_ctx_arg) \
+    for (; si >= si_end; --si) {                               \
+        update_coeff_simple(&accu_rate,                        \
+                            si,                                \
+                            *eob,                              \
+                            tx_size,                           \
+                            tx_class_literal,                  \
+                            bwl,                               \
+                            rdmult,                            \
+                            shift,                             \
+                            p->dequant_qtx,                    \
+                            scan,                              \
+                            txb_costs,                         \
+                            coeff_ptr,                         \
+                            qcoeff_ptr,                        \
+                            dqcoeff_ptr,                       \
+                            levels,                            \
+                            qparam->iqmatrix,                  \
+                            nz_ctx_arg);                       \
+    }
         switch (tx_class) {
-            UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_2D);
-            UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_HORIZ);
-            UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_VERT);
-#undef UPDATE_COEFF_SIMPLE_CASE
+        case TX_CLASS_2D:
+            if (nz_ctx) {
+                UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_2D, nz_ctx);
+            } else {
+                UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_2D, NULL);
+            }
+            break;
+        case TX_CLASS_HORIZ:
+            UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_HORIZ, NULL);
+            break;
+        case TX_CLASS_VERT:
+            UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_VERT, NULL);
+            break;
+#undef UPDATE_COEFF_SIMPLE_LOOP
         default:
             assert(false);
         }
@@ -1244,8 +1397,14 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                              qcoeff_ptr,
                              dqcoeff_ptr,
                              levels,
-                             qparam->iqmatrix);
+                             qparam->iqmatrix,
+                             NULL);
     }
+    // a cut-off pass (si_end > 1) does not cost the positions below si_end, so its rate is not the full rate
+    ctx->rdoq_rate        = accu_rate;
+    ctx->rdoq_rate_qcoeff = si > 0 ? NULL : qcoeff_ptr;
+    ctx->rdoq_rate_eob    = *eob;
+    ctx->rdoq_rate_key    = get_rdoq_rate_key(tx_size, tx_type, plane_type, txb_skip_context, dc_sign_context);
 }
 
 static INLINE TxSize aom_av1_get_adjusted_tx_size(TxSize tx_size) {
@@ -1544,6 +1703,8 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
                                       uint32_t component_type, uint32_t bit_depth, TxType tx_type,
                                       int16_t txb_skip_context, int16_t dc_sign_context, PredictionMode pred_mode,
                                       uint32_t lambda, bool is_encode_pass) {
+    ctx->rdoq_rate_qcoeff = NULL;
+
     SequenceControlSet* scs     = pcs->scs;
     EncodeContext*      enc_ctx = scs->enc_ctx;
     int32_t             plane   = component_type == COMPONENT_LUMA ? PLANE_Y
@@ -1766,6 +1927,7 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
     // in a single place.
     if (component_type == COMPONENT_LUMA && ctx->coeff_shaving_ctrls.enabled && *eob > 1) {
         *eob = shave_coeff(quant_coeff, recon_coeff, coeff, *eob, txsize, tx_type, lambda, &ctx->coeff_shaving_ctrls);
+        ctx->rdoq_rate_qcoeff = NULL;
     }
 
     if (!ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
@@ -2127,15 +2289,16 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
             ctx->cb_txb_skip_context = 0;
             ctx->cb_dc_sign_context  = 0;
             if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
-                svt_aom_get_txb_ctx(pcs,
-                                    COMPONENT_CHROMA,
-                                    ctx->cb_dc_sign_level_coeff_na,
-                                    ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
-                                    ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
-                                    ctx->blk_geom->bsize_uv,
-                                    tx_size_uv,
-                                    &ctx->cb_txb_skip_context,
-                                    &ctx->cb_dc_sign_context);
+                svt_aom_get_block_txb_ctx(pcs,
+                                          ctx,
+                                          1,
+                                          ctx->cb_dc_sign_level_coeff_na,
+                                          ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
+                                          ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
+                                          ctx->blk_geom->bsize_uv,
+                                          tx_size_uv,
+                                          &ctx->cb_txb_skip_context,
+                                          &ctx->cb_dc_sign_context);
             }
             // Configure the Chroma Residual Ptr
 
@@ -2329,15 +2492,16 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
             ctx->cr_txb_skip_context = 0;
             ctx->cr_dc_sign_context  = 0;
             if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
-                svt_aom_get_txb_ctx(pcs,
-                                    COMPONENT_CHROMA,
-                                    ctx->cr_dc_sign_level_coeff_na,
-                                    ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
-                                    ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
-                                    ctx->blk_geom->bsize_uv,
-                                    tx_size_uv,
-                                    &ctx->cr_txb_skip_context,
-                                    &ctx->cr_dc_sign_context);
+                svt_aom_get_block_txb_ctx(pcs,
+                                          ctx,
+                                          2,
+                                          ctx->cr_dc_sign_level_coeff_na,
+                                          ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
+                                          ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
+                                          ctx->blk_geom->bsize_uv,
+                                          tx_size_uv,
+                                          &ctx->cr_txb_skip_context,
+                                          &ctx->cr_dc_sign_context);
             }
             // Configure the Chroma Residual Ptr
 
