@@ -1,5 +1,5 @@
 
-name: Sync SVT-AV1 Upstream (chatGPT)
+name: Sync SVT-AV1 Upstream (ChatGPT)
 
 on:
   workflow_dispatch:
