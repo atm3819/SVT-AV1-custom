@@ -642,7 +642,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2_AVX512(svt_aom_highbd_smooth_v_predictor_64x64, svt_aom_highbd_smooth_v_predictor_64x64_c, svt_aom_highbd_smooth_v_predictor_64x64_sse4_1, svt_aom_highbd_smooth_v_predictor_64x64_avx2, aom_highbd_smooth_v_predictor_64x64_avx512);
 #endif
     SET_SSE41_AVX2(svt_av1_dr_prediction_z1, svt_av1_dr_prediction_z1_c, svt_av1_dr_prediction_z1_sse4_1, svt_av1_dr_prediction_z1_avx2);
-    SET_SSE41_AVX2(svt_av1_dr_prediction_z2, svt_av1_dr_prediction_z2_c, svt_av1_dr_prediction_z2_sse4_1, svt_av1_dr_prediction_z2_avx2);
+    SET_SSE41_AVX2_AVX512(svt_av1_dr_prediction_z2, svt_av1_dr_prediction_z2_c, svt_av1_dr_prediction_z2_sse4_1, svt_av1_dr_prediction_z2_avx2, svt_av1_dr_prediction_z2_avx512);
     SET_SSE41_AVX2(svt_av1_dr_prediction_z3, svt_av1_dr_prediction_z3_c, svt_av1_dr_prediction_z3_sse4_1, svt_av1_dr_prediction_z3_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSE41_AVX2(svt_av1_highbd_dr_prediction_z1, svt_av1_highbd_dr_prediction_z1_c, svt_av1_highbd_dr_prediction_z1_sse4_1, svt_av1_highbd_dr_prediction_z1_avx2);
@@ -907,6 +907,22 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2(svt_aom_lpf_vertical_6, svt_aom_lpf_vertical_6_c, svt_aom_lpf_vertical_6_sse2);
     SET_SSE2(svt_aom_lpf_vertical_8, svt_aom_lpf_vertical_8_c, svt_aom_lpf_vertical_8_sse2);
     SET_SSE2(svt_aom_lpf_vertical_14, svt_aom_lpf_vertical_14_c, svt_aom_lpf_vertical_14_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_4_dual, svt_aom_lpf_horizontal_4_dual_c, svt_aom_lpf_horizontal_4_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_6_dual, svt_aom_lpf_horizontal_6_dual_c, svt_aom_lpf_horizontal_6_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_8_dual, svt_aom_lpf_horizontal_8_dual_c, svt_aom_lpf_horizontal_8_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_14_dual, svt_aom_lpf_horizontal_14_dual_c, svt_aom_lpf_horizontal_14_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_4_dual, svt_aom_lpf_vertical_4_dual_c, svt_aom_lpf_vertical_4_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_6_dual, svt_aom_lpf_vertical_6_dual_c, svt_aom_lpf_vertical_6_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_8_dual, svt_aom_lpf_vertical_8_dual_c, svt_aom_lpf_vertical_8_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_14_dual, svt_aom_lpf_vertical_14_dual_c, svt_aom_lpf_vertical_14_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_4_quad, svt_aom_lpf_horizontal_4_quad_c, svt_aom_lpf_horizontal_4_quad_sse2);
+    SET_SSE2_AVX2(svt_aom_lpf_horizontal_6_quad, svt_aom_lpf_horizontal_6_quad_c, svt_aom_lpf_horizontal_6_quad_sse2, svt_aom_lpf_horizontal_6_quad_avx2);
+    SET_SSE2_AVX2(svt_aom_lpf_horizontal_8_quad, svt_aom_lpf_horizontal_8_quad_c, svt_aom_lpf_horizontal_8_quad_sse2, svt_aom_lpf_horizontal_8_quad_avx2);
+    SET_SSE2_AVX2(svt_aom_lpf_horizontal_14_quad, svt_aom_lpf_horizontal_14_quad_c, svt_aom_lpf_horizontal_14_quad_sse2, svt_aom_lpf_horizontal_14_quad_avx2);
+    SET_SSE2(svt_aom_lpf_vertical_4_quad, svt_aom_lpf_vertical_4_quad_c, svt_aom_lpf_vertical_4_quad_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_6_quad, svt_aom_lpf_vertical_6_quad_c, svt_aom_lpf_vertical_6_quad_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_8_quad, svt_aom_lpf_vertical_8_quad_c, svt_aom_lpf_vertical_8_quad_sse2);
+    SET_SSE2_AVX2(svt_aom_lpf_vertical_14_quad, svt_aom_lpf_vertical_14_quad_c, svt_aom_lpf_vertical_14_quad_sse2, svt_aom_lpf_vertical_14_quad_avx2);
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     // svt_aom_highbd_v_predictor
