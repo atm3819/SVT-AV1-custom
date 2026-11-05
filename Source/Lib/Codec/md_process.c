@@ -70,6 +70,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_pred_pool);
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_rec_coeff_pool);
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_quant_pool);
+    EB_FREE_ALIGNED_ARRAY(obj->cand_dct_dct_coeff);
     EB_FREE_ARRAY(obj->cand_bf_tx_depth_1->cand);
     EB_DELETE(obj->cand_bf_tx_depth_1);
     EB_FREE_ARRAY(obj->cand_bf_tx_depth_2->cand);
@@ -101,7 +102,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     EB_FREE_ARRAY(obj->uv_cand_buff_indices);
     obj->blocks_to_alloc = 0;
     EB_FREE_ARRAY(obj->md_blk_arr_nsq);
-    EB_FREE_ARRAY(obj->pd0_mds0_best_cost);
+    EB_FREE_ARRAY(obj->pd0_fullpel_var);
     if (obj->rate_est_table) {
         EB_FREE_ARRAY(obj->rate_est_table);
     }
@@ -390,7 +391,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         EB_MALLOC(ctx->mask_buf, sb_size * sb_size * sizeof(ctx->mask_buf[0]));
     }
     EB_MALLOC_ARRAY(ctx->md_blk_arr_nsq, block_max_count_sb);
-    EB_MALLOC_ARRAY(ctx->pd0_mds0_best_cost, block_max_count_sb);
+    EB_CALLOC_ARRAY(ctx->pd0_fullpel_var, block_max_count_sb);
     // Fast Candidate Array
     uint16_t max_can_count = svt_aom_get_max_can_count(enc_mode, rtc_tune) + ind_uv_cands;
     EB_MALLOC_ARRAY(ctx->fast_cand_array, max_can_count);
@@ -671,6 +672,8 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     if (cand_err != EB_ErrorNone) {
         return cand_err;
     }
+    // Zeroed: the debug reuse check compares whole blocks, including coefficients a transform leaves unwritten
+    EB_CALLOC_ALIGNED_ARRAY(ctx->cand_dct_dct_coeff, (size_t)ctx->max_nics * MAX_TX_SQUARE);
 
     for (buffer_index = 0; buffer_index < ctx->max_nics_uv; ++buffer_index) {
         ctx->cand_bf_ptr_array[buffer_index] = &ctx->cand_bf_pool[buffer_index];
@@ -685,6 +688,11 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                                                                  &(ctx->full_cost_ssim_array[buffer_index]));
         if (cbf_err != EB_ErrorNone) {
             return cbf_err;
+        }
+        // chroma-only slots never hold a luma candidate
+        if (buffer_index < ctx->max_nics) {
+            ctx->cand_bf_ptr_array[buffer_index]->dct_dct_coeff = ctx->cand_dct_dct_coeff +
+                (size_t)buffer_index * MAX_TX_SQUARE;
         }
     }
 

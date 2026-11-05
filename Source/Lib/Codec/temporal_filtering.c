@@ -242,7 +242,10 @@ static void create_me_context_and_picture_control(MotionEstimationContext_t* me_
         }
     }
 #endif
-    me_context_ptr->me_ctx->b64_src_ptr    = &(padded_pic_ptr->y_buffer[buffer_index]);
+    me_context_ptr->me_ctx->b64_src_ptr = &(padded_pic_ptr->y_buffer[buffer_index]);
+#if EN_AVX512_SUPPORT
+    me_context_ptr->me_ctx->ext_sad_prep_src = NULL;
+#endif
     me_context_ptr->me_ctx->b64_src_stride = padded_pic_ptr->y_stride;
 
     // Load the 1/4 decimated SB from the 1/4 decimated input to the 1/4 intermediate SB buffer
@@ -1465,7 +1468,7 @@ static void svt_check_position(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PicturePare
     mv.y = tf_sp_param->mv_y + tf_sp_param->yd;
 
     svt_aom_simple_luma_unipred(scs,
-                                scs->sf_identity,
+                                &scs->sf_identity,
                                 tf_sp_param->interp_filters,
                                 blk_ptr,
                                 mv,
@@ -1503,14 +1506,18 @@ static void svt_check_position(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PicturePare
             tf_sp_param->bsize * tf_sp_param->idx_x;
         uint8_t* src_y_ptr = src[PLANE_Y] + tf_sp_param->bsize * tf_sp_param->idx_y * stride_src[PLANE_Y] +
             tf_sp_param->bsize * tf_sp_param->idx_x;
-        const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[block_size];
-        unsigned int            sse;
-        distortion = fn_ptr->vf(pred_y_ptr,
-                                stride_pred[PLANE_Y] << tf_sp_param->subsampling_shift,
-                                src_y_ptr,
-                                stride_src[PLANE_Y] << tf_sp_param->subsampling_shift,
-                                &sse)
-            << tf_sp_param->subsampling_shift;
+        if (tf_sp_param->sv) {
+            distortion = svt_aom_src_var(tf_sp_param->sv, pred_y_ptr, stride_pred[PLANE_Y]);
+        } else {
+            const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[block_size];
+            unsigned int            sse;
+            distortion = fn_ptr->vf(pred_y_ptr,
+                                    stride_pred[PLANE_Y] << tf_sp_param->subsampling_shift,
+                                    src_y_ptr,
+                                    stride_src[PLANE_Y] << tf_sp_param->subsampling_shift,
+                                    &sse)
+                << tf_sp_param->subsampling_shift;
+        }
     } else {
         uint16_t* pred_y_ptr = pred_16bit[PLANE_Y] + tf_sp_param->bsize * tf_sp_param->idx_y * stride_pred[PLANE_Y] +
             tf_sp_param->bsize * tf_sp_param->idx_x;
@@ -1546,6 +1553,20 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
                              EbByte* pred, uint16_t** pred_16bit, uint32_t* stride_pred, EbByte* src,
                              uint16_t** src_16bit, uint32_t* stride_src, uint64_t* best_dist, int16_t* best_mv_x,
                              int16_t* best_mv_y) {
+    // All positions are compared against the same source block
+    SrcVarCtx      sv;
+    const uint32_t bs = tf_sp_param->bsize;
+    tf_sp_param->sv   = NULL;
+    if (SVT_X86_ONLY_KERNEL_PATHS && !tf_sp_param->is_highbd && !tf_sp_param->subsampling_shift &&
+        (bs == 16 || bs == 32 || bs == 64)) {
+        sv.vf = svt_aom_mefn_ptr[bs == 16 ? BLOCK_16X16 : bs == 32 ? BLOCK_32X32 : BLOCK_64X64].vf;
+        svt_aom_src_var_prep(&sv,
+                             src[PLANE_Y] + bs * tf_sp_param->idx_y * stride_src[PLANE_Y] + bs * tf_sp_param->idx_x,
+                             stride_src[PLANE_Y],
+                             bs,
+                             bs);
+        tf_sp_param->sv = &sv;
+    }
     // Check centre position
     tf_sp_param->subpel_pel_mode = pcs->tf_ctrls.half_pel_mode;
     tf_sp_param->mv_x            = *best_mv_x;
@@ -1663,6 +1684,7 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
             }
         }
     }
+    tf_sp_param->sv = NULL;
 }
 
 static void tf_64x64_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_ctx, PictureParentControlSet* pcs_ref,

@@ -352,6 +352,14 @@ void set_segments_numbers(SequenceControlSet* scs) {
         scs->me_segment_row_count_array = scs->tf_segment_row_count = rows;
         scs->me_segment_col_count_array = scs->tf_segment_column_count = cols;
     }
+
+    // Random access keeps several pictures in flight, so at low parallelism levels full-width ME/TF and TPL segments
+    // still keep the workers busy; finer grids only add per-segment wake-ups and setup (measured at P5 lp4: ~1.5-3%
+    // less CPU time).
+    if (scs->static_config.pred_structure == RANDOM_ACCESS && lp != PARALLEL_LEVEL_1 && lp <= PARALLEL_LEVEL_4) {
+        scs->me_segment_col_count_array = scs->tf_segment_column_count = 1;
+        scs->tpl_segment_col_count_array                               = 1;
+    }
 }
 
 static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet* scs) {
@@ -771,6 +779,15 @@ static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet
         scs->total_process_init_count += (scs->rest_process_init_count = clamp(10, 1, max_rest_proc));
     }
 #undef WORKERS_COUNT
+    // With the full-width random-access segment grid (set_segments_numbers()), workers beyond one picture's ME segments
+    // plus slack mostly wait; each extra one costs wake-ups.
+    if (scs->static_config.pred_structure == RANDOM_ACCESS && lp != PARALLEL_LEVEL_1 && lp <= PARALLEL_LEVEL_4) {
+        const uint32_t me_proc = clamp(tot_me_segs + 2, 1, max_me_proc);
+        if (me_proc < scs->motion_estimation_process_init_count) {
+            scs->total_process_init_count -= scs->motion_estimation_process_init_count - me_proc;
+            scs->motion_estimation_process_init_count = me_proc;
+        }
+    }
     scs->total_process_init_count += 6; // single processes count
     if (scs->static_config.pass == 0 || scs->static_config.pass == 2) {
         SVT_INFO("Level of Parallelism: %u\n", lp);
