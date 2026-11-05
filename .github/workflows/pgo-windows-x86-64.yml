@@ -147,8 +147,8 @@ jobs:
             -DSVT_AV1_PGO_DIR="%BUILD_DIR%" ^
             -DCMAKE_C_COMPILER=clang ^
             -DCMAKE_CXX_COMPILER=clang++ ^
-            -DCMAKE_C_FLAGS="-march=x86-64" ^
-            -DCMAKE_CXX_FLAGS="-march=x86-64"
+            -DCMAKE_C_FLAGS="-march=x86-64 -mavx512f" ^
+            -DCMAKE_CXX_FLAGS="-march=x86-64 -mavx512f"
 
           if errorlevel 1 exit /b 1
 
@@ -292,8 +292,8 @@ jobs:
             -DSVT_AV1_PGO_DIR="%BUILD_DIR%" ^
             -DCMAKE_C_COMPILER=clang ^
             -DCMAKE_CXX_COMPILER=clang++ ^
-            -DCMAKE_C_FLAGS="-march=x86-64 -flto -fuse-ld=lld" ^
-            -DCMAKE_CXX_FLAGS="-march=x86-64 -flto -fuse-ld=lld" ^
+            -DCMAKE_C_FLAGS="-march=x86-64 -flto -fuse-ld=lld -mavx512f" ^
+            -DCMAKE_CXX_FLAGS="-march=x86-64 -flto -fuse-ld=lld -mavx512f" ^
             -DCMAKE_EXE_LINKER_FLAGS="-flto -fuse-ld=lld" ^
             -DCMAKE_SHARED_LINKER_FLAGS="-flto -fuse-ld=lld" ^
             -DCMAKE_MODULE_LINKER_FLAGS="-flto -fuse-ld=lld"
