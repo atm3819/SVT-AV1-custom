@@ -488,7 +488,7 @@ else()
             check_both_flags_add(PREPEND -fno-stack-clash-protection)
         endif()
     endif()
-    # check_both_flags_add(-mno-avx)
+    check_both_flags_add(-mno-avx)
 endif()
 
 if(CMAKE_C_FLAGS MATCHES "-O" AND NOT CMAKE_C_FLAGS MATCHES "-O0" AND NOT MINGW)
