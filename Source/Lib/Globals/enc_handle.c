@@ -5098,6 +5098,7 @@ EB_API EbErrorType svt_av1_enc_stream_header(EbComponentType*     svt_enc_compon
     memset(&output_bitstream, 0, sizeof(OutputBitstreamUnit));
     bitstream.output_bitstream_ptr = &output_bitstream;
     EB_MALLOC_OBJECT(output_stream_buffer);
+    memset(output_stream_buffer, 0, sizeof(EbBufferHeaderType));
     EB_MALLOC_ARRAY_NO_CHECK(output_stream_buffer->p_buffer, output_buffer_size);
     if (!output_stream_buffer->p_buffer) {
         EB_FREE(output_stream_buffer);
@@ -6301,6 +6302,8 @@ void svt_output_buffer_header_destroyer(EbPtr p) {
     EbBufferHeaderType* obj = (EbBufferHeaderType*)p;
     // a hidden frame still waiting for its show_existing_frame holds that frame's metadata
     svt_metadata_array_free(&obj->metadata);
+    // a packet never released through svt_av1_enc_release_out_buffer still owns its bitstream
+    EB_FREE(obj->p_buffer);
     EB_FREE(obj);
 }
 
