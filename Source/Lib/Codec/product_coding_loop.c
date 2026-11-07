@@ -1908,7 +1908,11 @@ static void svt_init_mv_cost_params(svt_mv_cost_param* mv_cost_params, ModeDecis
     mv_cost_params->ref_mv        = ref_mv;
     mv_cost_params->full_ref_mv   = get_fullmv_from_mv(ref_mv);
     mv_cost_params->early_exit_th = 1020 - (ctx->blk_geom->sq_size >> 2);
-    mv_cost_params->mv_cost_type  = ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3 ? MV_COST_OPT : MV_COST_ENTROPY;
+    // With approx_inter_rate the MV cost tables are not built (svt_aom_estimate_mv_rate zeroes them), so the entropy
+    // cost would be 0; use the L1 approximation instead.
+    mv_cost_params->mv_cost_type  = ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3 || ctx->approx_inter_rate
+        ? MV_COST_OPT
+        : MV_COST_ENTROPY;
     mv_cost_params->error_per_bit = AOMMAX(rdmult >> RD_EPB_SHIFT, 1);
     mv_cost_params->sad_per_bit   = svt_aom_get_sad_per_bit(base_q_idx, hbd_md);
     mv_cost_params->mvjcost       = ctx->md_rate_est_ctx->nmv_vec_cost;
@@ -8958,8 +8962,8 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     uint8_t* dst_ptr_top_left  = svt_aom_na_top_ptr(ctx->recon_neigh_y, blk_org_x);
     uint8_t* dst_ptr_bot_right = svt_aom_na_botleft_ptr(ctx->recon_neigh_y, blk_org_x, blk_org_y, bheight);
     uint8_t* src_ptr           = recon_ptr->y_buffer + rec_luma_offset + (bheight - 1) * recon_ptr->y_stride;
-    memcpy(dst_ptr_top_left, src_ptr, bwidth);
-    memcpy(dst_ptr_bot_right, src_ptr, bwidth);
+    svt_aom_na_memcpy_small(dst_ptr_top_left, src_ptr, bwidth);
+    svt_aom_na_memcpy_small(dst_ptr_bot_right, src_ptr, bwidth);
 
     // Copy right and left columns
     dst_ptr_top_left  = svt_aom_na_left_ptr(ctx->recon_neigh_y, blk_org_y);
@@ -8972,8 +8976,8 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     dst_ptr_top_left  = svt_aom_na_top_ptr(ctx->recon_neigh_cb, blk_origin_x_uv);
     dst_ptr_bot_right = svt_aom_na_botleft_ptr(ctx->recon_neigh_cb, blk_origin_x_uv, blk_origin_y_uv, bheight_uv);
     src_ptr           = recon_ptr->u_buffer + rec_cb_offset + (bheight_uv - 1) * recon_ptr->u_stride;
-    memcpy(dst_ptr_top_left, src_ptr, bwidth_uv);
-    memcpy(dst_ptr_bot_right, src_ptr, bwidth_uv);
+    svt_aom_na_memcpy_small(dst_ptr_top_left, src_ptr, bwidth_uv);
+    svt_aom_na_memcpy_small(dst_ptr_bot_right, src_ptr, bwidth_uv);
 
     // Copy right and left columns
     dst_ptr_top_left  = svt_aom_na_left_ptr(ctx->recon_neigh_cb, blk_origin_y_uv);
@@ -8986,8 +8990,8 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     dst_ptr_top_left  = svt_aom_na_top_ptr(ctx->recon_neigh_cr, blk_origin_x_uv);
     dst_ptr_bot_right = svt_aom_na_botleft_ptr(ctx->recon_neigh_cr, blk_origin_x_uv, blk_origin_y_uv, bheight_uv);
     src_ptr           = recon_ptr->v_buffer + rec_cr_offset + (bheight_uv - 1) * recon_ptr->v_stride;
-    memcpy(dst_ptr_top_left, src_ptr, bwidth_uv);
-    memcpy(dst_ptr_bot_right, src_ptr, bwidth_uv);
+    svt_aom_na_memcpy_small(dst_ptr_top_left, src_ptr, bwidth_uv);
+    svt_aom_na_memcpy_small(dst_ptr_bot_right, src_ptr, bwidth_uv);
 
     // Copy right and left columns
     dst_ptr_top_left  = svt_aom_na_left_ptr(ctx->recon_neigh_cr, blk_origin_y_uv);

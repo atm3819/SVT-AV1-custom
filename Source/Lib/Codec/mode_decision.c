@@ -3015,9 +3015,10 @@ static void intra_bc_search(PictureControlSet* pcs, ModeDecisionContext* ctx, co
 
     x->approx_inter_rate = ctx->approx_inter_rate;
     x->xd                = blk_ptr->av1xd;
-    x->nmv_vec_cost      = ctx->md_rate_est_ctx->nmv_vec_cost;
-    x->mv_cost_stack     = ctx->md_rate_est_ctx->nmvcoststack;
-    BlockSize bsize      = ctx->blk_geom->bsize;
+    // DVs are coded with the DV costs, which nmvcoststack points to in intra-BC frames
+    x->nmv_vec_cost  = ctx->md_rate_est_ctx->dv_joint_cost;
+    x->mv_cost_stack = ctx->md_rate_est_ctx->nmvcoststack;
+    BlockSize bsize  = ctx->blk_geom->bsize;
     assert(bsize < BLOCK_SIZES_ALL);
     FrameHeader*           frm_hdr    = &pcs->ppcs->frm_hdr;
     const Av1Common* const cm         = pcs->ppcs->av1_cm;
