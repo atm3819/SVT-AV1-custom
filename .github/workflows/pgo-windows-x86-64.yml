@@ -282,7 +282,6 @@ jobs:
             -B "%BUILD_DIR%" ^
             -G "Ninja" ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DENABLE_AVX512=OFF ^
             -DBUILD_SHARED_LIBS=OFF ^
             -DBUILD_TESTING=OFF ^
             -DBUILD_APPS=ON ^
