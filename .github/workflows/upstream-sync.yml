@@ -33,20 +33,35 @@ jobs:
           echo "Syncing from upstream default branch: $UPSTREAM_DEFAULT_BRANCH"
 
           git fetch upstream "$UPSTREAM_DEFAULT_BRANCH"
+          UPSTREAM_REF=$(git rev-parse FETCH_HEAD)
           git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
 
-          if ! git merge --no-ff --no-edit -X theirs FETCH_HEAD; then
-            echo "Merge hit conflicts; restoring local workflow files and keeping upstream changes elsewhere."
-            git status --short
-            git restore --source=HEAD --staged --worktree -- .github/workflows/
-            git add -A
-            git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)" || true
-          else
-            git restore --source=HEAD --staged --worktree -- .github/workflows/
-            git add -A
-            git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)" || true
+          if ! git merge --no-ff --no-commit -X theirs "$UPSTREAM_REF"; then
+            echo "Merge conflicts detected; resolving non-workflow conflicts in favor of upstream."
+            while IFS= read -r -d '' file; do
+              if [[ "$file" == .github/workflows/* ]]; then
+                if git cat-file -e ":2:$file" 2>/dev/null; then
+                  git checkout --ours -- "$file"
+                  git add -- "$file"
+                else
+                  git rm -f -- "$file"
+                fi
+              else
+                if git cat-file -e ":3:$file" 2>/dev/null; then
+                  git checkout --theirs -- "$file"
+                  git add -- "$file"
+                else
+                  git rm -f -- "$file"
+                fi
+              fi
+            done < <(git diff --name-only --diff-filter=U -z)
           fi
 
+          # Remove upstream workflow additions/changes, then restore this repository's versions.
+          git rm -r -f --ignore-unmatch .github/workflows/
+          git checkout HEAD -- .github/workflows/
+          git add -A
+          git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)"
           git push --force origin upstream-sync
 
       - name: Show sync diffstat
