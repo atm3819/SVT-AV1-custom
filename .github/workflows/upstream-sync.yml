@@ -16,8 +16,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Merge upstream updates
-        id: sync
+      - name: Sync upstream changes
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -35,16 +34,17 @@ jobs:
 
           git fetch upstream "$UPSTREAM_DEFAULT_BRANCH"
           git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
-          UPSTREAM_REF=$(git rev-parse FETCH_HEAD)
 
-          if git merge-base --is-ancestor "$UPSTREAM_REF" HEAD; then
-            echo "The upstream default branch is already included."
-          else
-            # Prefer upstream for ordinary conflicts, but preserve this repository's workflow files.
-            git merge --no-ff --no-commit -X theirs "$UPSTREAM_REF"
+          if ! git merge --no-ff --no-edit -X theirs FETCH_HEAD; then
+            echo "Merge hit conflicts; restoring local workflow files and keeping upstream changes elsewhere."
+            git status --short
             git restore --source=HEAD --staged --worktree -- .github/workflows/
-            git clean -fd -- .github/workflows/
-            git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)"
+            git add -A
+            git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)" || true
+          else
+            git restore --source=HEAD --staged --worktree -- .github/workflows/
+            git add -A
+            git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)" || true
           fi
 
           git push --force origin upstream-sync
