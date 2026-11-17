@@ -166,7 +166,7 @@ static uint32_t get_num_processors() {
 #ifdef _WIN32
     return GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 #else
-    return sysconf(_SC_NPROCESSORS_ONLN);
+    return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 }
 
@@ -5455,8 +5455,7 @@ EbErrorType svt_input_buffer_header_update(EbBufferHeaderType* input_buffer, Seq
 **************************************/
 EbErrorType svt_input_y8b_update(EbBufferHeaderType* input_buffer, SequenceControlSet* scs) {
     EbPictureBufferDescInitData input_pic_buf_desc_init_data;
-    EbSvtAv1EncConfiguration*   config   = &scs->static_config;
-    uint8_t                     is_16bit = 0;
+    EbSvtAv1EncConfiguration*   config = &scs->static_config;
 
     input_pic_buf_desc_init_data.max_width = !(scs->max_input_luma_width % 8)
         ? scs->max_input_luma_width
@@ -5470,7 +5469,7 @@ EbErrorType svt_input_y8b_update(EbBufferHeaderType* input_buffer, SequenceContr
 
     input_pic_buf_desc_init_data.border = scs->border;
 
-    input_pic_buf_desc_init_data.split_mode = is_16bit ? true : false;
+    input_pic_buf_desc_init_data.split_mode = false;
 
     input_pic_buf_desc_init_data.buffer_enable_mask = PICTURE_BUFFER_DESC_LUMA_MASK; //allocate for 8bit Luma only
     input_pic_buf_desc_init_data.is_16bit_pipeline  = 0;
@@ -6159,8 +6158,7 @@ static EbErrorType allocate_frame_buffer(SequenceControlSet* scs, EbBufferHeader
 static EbErrorType allocate_y8b_frame_buffer(SequenceControlSet* scs, EbBufferHeaderType* input_buffer) {
     EbErrorType                 return_error = EB_ErrorNone;
     EbPictureBufferDescInitData input_pic_buf_desc_init_data;
-    EbSvtAv1EncConfiguration*   config   = &scs->static_config;
-    uint8_t                     is_16bit = 0;
+    EbSvtAv1EncConfiguration*   config = &scs->static_config;
 
     input_pic_buf_desc_init_data.max_width = !(scs->max_input_luma_width % 8)
         ? scs->max_input_luma_width
@@ -6174,7 +6172,7 @@ static EbErrorType allocate_y8b_frame_buffer(SequenceControlSet* scs, EbBufferHe
 
     input_pic_buf_desc_init_data.border = scs->border;
 
-    input_pic_buf_desc_init_data.split_mode = is_16bit ? true : false;
+    input_pic_buf_desc_init_data.split_mode = false;
 
     input_pic_buf_desc_init_data.buffer_enable_mask = PICTURE_BUFFER_DESC_LUMA_MASK; //allocate for 8bit Luma only
     input_pic_buf_desc_init_data.is_16bit_pipeline  = 0;
