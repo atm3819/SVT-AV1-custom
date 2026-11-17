@@ -1,0 +1,70 @@
+name: Check SVT-AV1 upstream
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Sync upstream changes
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/AOMediaCodec/SVT-AV1.git
+
+          UPSTREAM_DEFAULT_BRANCH=$(git ls-remote --symref upstream HEAD | awk '$1 == "ref:" { sub("refs/heads/", "", $2); print $2; exit }')
+          if [ -z "$UPSTREAM_DEFAULT_BRANCH" ]; then
+            echo "Could not determine the upstream default branch from its HEAD reference." >&2
+            exit 1
+          fi
+          echo "Syncing from upstream default branch: $UPSTREAM_DEFAULT_BRANCH"
+
+          git fetch upstream "$UPSTREAM_DEFAULT_BRANCH"
+          UPSTREAM_REF=$(git rev-parse FETCH_HEAD)
+          git checkout -B upstream-sync "origin/$DEFAULT_BRANCH"
+
+          if ! git merge --no-ff --no-commit -X theirs "$UPSTREAM_REF"; then
+            echo "Merge conflicts detected; resolving non-workflow conflicts in favor of upstream."
+            while IFS= read -r -d '' file; do
+              if [[ "$file" == .github/workflows/* ]]; then
+                if git cat-file -e ":2:$file" 2>/dev/null; then
+                  git checkout --ours -- "$file"
+                  git add -- "$file"
+                else
+                  git rm -f -- "$file"
+                fi
+              else
+                if git cat-file -e ":3:$file" 2>/dev/null; then
+                  git checkout --theirs -- "$file"
+                  git add -- "$file"
+                else
+                  git rm -f -- "$file"
+                fi
+              fi
+            done < <(git diff --name-only --diff-filter=U -z)
+          fi
+
+          # Remove upstream workflow additions/changes, then restore this repository's versions.
+          git rm -r -f --ignore-unmatch .github/workflows/
+          git checkout HEAD -- .github/workflows/
+          git add -A
+          git commit -m "Sync upstream default branch ($UPSTREAM_DEFAULT_BRANCH)"
+          git push --force origin upstream-sync
+
+      - name: Show sync diffstat
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: git diff --stat "origin/$DEFAULT_BRANCH...upstream-sync"
