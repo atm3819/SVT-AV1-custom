@@ -1,0 +1,117 @@
+
+name: Check-Upstream (chatgpt)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/AOMediaCodec/SVT-AV1.git
+  TARGET_BRANCH: upstream-changes
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: fork
+          fetch-depth: 0
+
+      - name: Clone upstream
+        run: |
+          git clone --no-tags "$UPSTREAM_URL" upstream
+
+      - name: Preserve fork GitHub directory
+        run: |
+          if [ ! -d fork/.github ]; then
+            echo "::error::Fork .github directory not found!"
+            exit 1
+          fi
+
+          rm -rf upstream/.github
+          cp -a fork/.github upstream/.github
+
+      - name: Configure Git
+        working-directory: upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare upstream snapshot
+        working-directory: upstream
+        run: |
+          git add -A
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Sync upstream with fork workflows"
+          else
+            echo "No additional commit needed."
+          fi
+
+      - name: Compare changes
+        id: compare
+        working-directory: upstream
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # Fetch fork's default branch for first-time comparison
+          git fetch ../fork \
+            "refs/remotes/origin/${DEFAULT_BRANCH}:refs/remotes/fork/default"
+
+          # Use existing sync branch if available
+          if git -C ../fork show-ref --verify --quiet \
+            "refs/remotes/origin/${TARGET_BRANCH}"; then
+
+            git fetch ../fork \
+              "refs/remotes/origin/${TARGET_BRANCH}:refs/remotes/fork/previous"
+
+            BASE="refs/remotes/fork/previous"
+            echo "Comparing against previous upstream snapshot."
+          else
+            BASE="refs/remotes/fork/default"
+            echo "First sync: comparing against fork default branch."
+          fi
+
+          echo "### Upstream changes" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          git diff --stat "$BASE" HEAD | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if git diff --quiet "$BASE" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected. Nothing to sync."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected."
+          fi
+
+      - name: Push upstream snapshot
+        if: steps.compare.outputs.changed == 'true'
+        working-directory: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AUTH_HEADER=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH_HEADER" \
+            push --force \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+            "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: No changes
+        if: steps.compare.outputs.changed == 'false'
+        run: |
+          echo "Upstream is already synchronized with the target snapshot."
+          echo "No push required."
